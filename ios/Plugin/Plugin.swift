@@ -18,7 +18,11 @@ public class FCMPlugin: CAPPlugin, MessagingDelegate {
     private var lastNotifiedToken: String?
 
     override public func load() {
-        if FirebaseApp.app() == nil {
+        // Only auto-configure from plist when a GoogleService-Info.plist is present.
+        // Apps using setFirebaseOptions() for dynamic/multi-tenant config must NOT
+        // ship GoogleService-Info.plist — Firebase will be configured at runtime instead.
+        if FirebaseApp.app() == nil,
+           Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist") != nil {
             FirebaseApp.configure()
         }
         Messaging.messaging().delegate = self
@@ -146,5 +150,29 @@ public class FCMPlugin: CAPPlugin, MessagingDelegate {
         lastNotifiedToken = token
 
         notifyListeners("tokenReceived", data: ["token": token])
+    }
+
+    @objc func setFirebaseOptions(_ call: CAPPluginCall) {
+        let applicationId = call.getString("applicationId") ?? ""
+        let gcmSenderId   = call.getString("gcmSenderId") ?? ""
+        let apiKey        = call.getString("apiKey") ?? ""
+        let projectId     = call.getString("projectId") ?? ""
+
+        let options = FirebaseOptions(googleAppID: applicationId, gcmSenderID: gcmSenderId)
+        options.apiKey    = apiKey
+        options.projectID = projectId
+
+        // Configure the default Firebase app with runtime options.
+        // This path is taken when no GoogleService-Info.plist is present
+        // (load() skips auto-configuration in that case).
+        // Re-initialization after FirebaseApp.configure() is not supported by the
+        // Firebase iOS SDK; apps that need to switch tenants must restart.
+        guard FirebaseApp.app() == nil else {
+            call.reject("Firebase is already configured. setFirebaseOptions() must be called before any Firebase initialization. Do not ship GoogleService-Info.plist when using dynamic configuration.")
+            return
+        }
+        FirebaseApp.configure(options: options)
+        Messaging.messaging().delegate = self
+        call.resolve()
     }
 }
