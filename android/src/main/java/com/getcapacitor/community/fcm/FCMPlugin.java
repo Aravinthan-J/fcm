@@ -22,18 +22,23 @@ public class FCMPlugin extends Plugin {
 
     public static final String TAG = "FirebaseMessaging";
 
+    private static final String SECONDARY_APP_NAME = "FCM";
+
     private FirebaseApp secondaryApp;
-    private FirebaseMessaging secondaryMessaging;
 
     private FirebaseMessaging getFirebaseMessaging() {
-        return secondaryApp != null ? secondaryMessaging : FirebaseMessaging.getInstance();
+        return secondaryApp != null ? secondaryApp.get(FirebaseMessaging.class) : FirebaseMessaging.getInstance();
+    }
+
+    private FirebaseInstallations getFirebaseInstallations() {
+        return secondaryApp != null ? FirebaseInstallations.getInstance(secondaryApp) : FirebaseInstallations.getInstance();
     }
 
     @PluginMethod
     public void subscribeTo(final PluginCall call) {
         final String topicName = call.getString("topic");
 
-        FirebaseMessaging.getInstance()
+        getFirebaseMessaging()
             .subscribeToTopic(topicName)
             .addOnSuccessListener(aVoid -> {
                 JSObject ret = new JSObject();
@@ -47,7 +52,7 @@ public class FCMPlugin extends Plugin {
     public void unsubscribeFrom(final PluginCall call) {
         final String topicName = call.getString("topic");
 
-        FirebaseMessaging.getInstance()
+        getFirebaseMessaging()
             .unsubscribeFromTopic(topicName)
             .addOnSuccessListener(aVoid -> {
                 JSObject ret = new JSObject();
@@ -59,7 +64,7 @@ public class FCMPlugin extends Plugin {
 
     @PluginMethod
     public void deleteInstance(final PluginCall call) {
-        FirebaseInstallations.getInstance()
+        getFirebaseInstallations()
             .delete()
             .addOnSuccessListener(aVoid -> call.resolve())
             .addOnFailureListener(e -> {
@@ -122,30 +127,51 @@ public class FCMPlugin extends Plugin {
     @PluginMethod
     public void setFirebaseOptions(final PluginCall call) {
         String applicationId = call.getString("applicationId");
+        String gcmSenderId = call.getString("gcmSenderId");
         String apiKey = call.getString("apiKey");
         String projectId = call.getString("projectId");
 
-        // gcmSenderId is accepted for interface parity with iOS but omitted from
-        // FirebaseOptions.Builder — setGcmSenderId() was removed in Firebase Android SDK 29+.
+        if (isEmpty(applicationId) || isEmpty(gcmSenderId) || isEmpty(apiKey) || isEmpty(projectId)) {
+            call.reject("applicationId, gcmSenderId, apiKey and projectId are required");
+            return;
+        }
+
         FirebaseOptions options = new FirebaseOptions.Builder()
             .setApplicationId(applicationId)
+            .setGcmSenderId(gcmSenderId)
             .setApiKey(apiKey)
             .setProjectId(projectId)
             .build();
 
-        // Use a named secondary app ("FCM") so we don't conflict with or
-        // re-initialize the default app that may already exist from google-services.json.
-        FirebaseApp existing = null;
-        for (FirebaseApp app : FirebaseApp.getApps(getContext())) {
-            if ("FCM".equals(app.getName())) {
-                existing = app;
-                break;
+        try {
+            // Use a named secondary app so we don't conflict with the default app
+            // that may already exist from google-services.json.
+            FirebaseApp existing = null;
+            for (FirebaseApp app : FirebaseApp.getApps(getContext())) {
+                if (SECONDARY_APP_NAME.equals(app.getName())) {
+                    existing = app;
+                    break;
+                }
             }
+
+            if (existing != null && options.equals(existing.getOptions())) {
+                secondaryApp = existing;
+            } else {
+                // Switching tenants: an existing app's options can't be changed, so tear it down first.
+                if (existing != null) {
+                    secondaryApp = null;
+                    existing.delete();
+                }
+                secondaryApp = FirebaseApp.initializeApp(getContext(), options, SECONDARY_APP_NAME);
+            }
+        } catch (Exception e) {
+            call.reject("Failed to initialize Firebase with the given options", e);
+            return;
         }
-        secondaryApp = existing != null
-            ? existing
-            : FirebaseApp.initializeApp(getContext(), options, "FCM");
-        secondaryMessaging = secondaryApp.get(FirebaseMessaging.class);
         call.resolve();
+    }
+
+    private static boolean isEmpty(String value) {
+        return value == null || value.isEmpty();
     }
 }
